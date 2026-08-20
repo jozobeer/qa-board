@@ -7,7 +7,7 @@
     {
       "binding": "DB",
       "database_name": "qa-board",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "b3bc3774-4234-4a00-b11b-f9001d279d3d",
       "migrations_dir": "migrations"
     }
   ],
