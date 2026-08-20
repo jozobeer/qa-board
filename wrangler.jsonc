@@ -1,0 +1,15 @@
+{
+  "name": "qa-board",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-01",
+  "assets": { "directory": "./public" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "qa-board",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "routes": [{ "pattern": "qa-board.jozo.beer", "custom_domain": true }]
+}
