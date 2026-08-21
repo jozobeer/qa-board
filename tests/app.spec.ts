@@ -208,3 +208,52 @@ test("送信処理中の追加操作では二重投稿されない", async ({ br
     await context.close();
   }
 });
+
+test("meta description があり空でない", async ({ page }) => {
+  await page.goto("/");
+  const meta = page.locator('meta[name="description"]');
+  await expect(meta).toBeAttached();
+  const content = await meta.getAttribute("content");
+  expect(content?.trim().length).toBeGreaterThan(0);
+});
+
+test("JSON-LD に WebApplication の必須フィールドがある", async ({ page }) => {
+  await page.goto("/");
+  const loc = page.locator('script[type="application/ld+json"]');
+  await expect(loc.first()).toBeAttached();
+  const raw = await loc.first().textContent();
+  expect(raw).toBeTruthy();
+  const parsed: unknown = JSON.parse(raw ?? "");
+  const app = findWebApplication(parsed);
+  expect(app).toBeTruthy();
+  expect(String(app?.name ?? "").trim().length).toBeGreaterThan(0);
+  expect(String(app?.description ?? "").trim().length).toBeGreaterThan(0);
+  expect(String(app?.url ?? "").trim().length).toBeGreaterThan(0);
+  expect(String(app?.applicationCategory ?? "").trim().length).toBeGreaterThan(0);
+  const offers = app?.offers as { price?: unknown } | undefined;
+  expect(String(offers?.price)).toBe("0");
+});
+
+test("使い方と FAQ のセクションがある", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#how-to")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "使い方" })).toBeVisible();
+  await expect(page.locator("#faq")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /よくある質問|FAQ/ })).toBeVisible();
+});
+
+function findWebApplication(data: unknown): Record<string, unknown> | undefined {
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const found = findWebApplication(item);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!data || typeof data !== "object") return undefined;
+  const rec = data as Record<string, unknown>;
+  const types = Array.isArray(rec["@type"]) ? rec["@type"] : [rec["@type"]];
+  if (types.includes("WebApplication")) return rec;
+  if ("@graph" in rec) return findWebApplication(rec["@graph"]);
+  return undefined;
+}

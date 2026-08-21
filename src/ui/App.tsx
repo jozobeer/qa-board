@@ -68,6 +68,42 @@ export function App() {
           ))}
         </div>
       )}
+      <HelpSections />
     </main>
+  );
+}
+
+const sectionHeading = { margin: "0 0 0.6rem", color: "#324a5e", fontSize: "1.15rem" } as const;
+const muted = { margin: "0.35rem 0 0", color: "#4a5563", lineHeight: 1.7 } as const;
+
+function HelpSections() {
+  return (
+    <>
+      <section id="how-to" aria-labelledby="how-to-heading" style={{ marginTop: "2.5rem" }}>
+        <h2 id="how-to-heading" style={sectionHeading}>
+          使い方
+        </h2>
+        <ol style={{ margin: 0, paddingLeft: "1.25rem", color: "#4a5563", lineHeight: 1.7 }}>
+          <li>上の欄に質問を書いて「質問する」を押します。名前は残りません。</li>
+          <li>投稿は新しい順のカードになります。各カードから、その質問への回答を送れます。</li>
+          <li>「未回答のみ」を入れると、まだ回答がない質問だけが表示されます。</li>
+        </ol>
+      </section>
+      <section id="faq" aria-labelledby="faq-heading" style={{ marginTop: "1.8rem" }}>
+        <h2 id="faq-heading" style={sectionHeading}>
+          よくある質問
+        </h2>
+        <h3 style={{ margin: "0.9rem 0 0", fontSize: "0.95rem", color: "#1a2430" }}>名前は表示されますか？</h3>
+        <p style={muted}>表示されません。ログインも不要です。</p>
+        <h3 style={{ margin: "0.9rem 0 0", fontSize: "0.95rem", color: "#1a2430" }}>投稿はあとから見られますか？</h3>
+        <p style={muted}>このボードに残るので、別の端末やブラウザから開いても同じ一覧が見えます。</p>
+        <h3 style={{ margin: "0.9rem 0 0", fontSize: "0.95rem", color: "#1a2430" }}>何文字まで書けますか？</h3>
+        <p style={muted}>質問も回答も 1〜400 文字です。空白だけでは送れません。</p>
+        <h3 style={{ margin: "0.9rem 0 0", fontSize: "0.95rem", color: "#1a2430" }}>
+          「未回答のみ」を入れると質問が消えたときは？
+        </h3>
+        <p style={muted}>回答が付いた質問は、その表示では出ません。チェックを外すと戻ります。</p>
+      </section>
+    </>
   );
 }
