@@ -24,14 +24,22 @@ describe("isRateLimited", () => {
   });
 });
 
-describe("POST /api/questions のレート制限", () => {
+describe("POST /api/rooms/:id/questions のレート制限", () => {
   it("同一クライアントの6件目を 429 で拒否する", async () => {
     const db = createMemoryDb();
     const headers = { "CF-Connecting-IP": "198.51.100.51", "Content-Type": "application/json" };
 
+    const created = await app.request(
+      "/api/rooms",
+      { method: "POST", headers, body: JSON.stringify({ name: "レート検証" }) },
+      { DB: db },
+    );
+    expect(created.status).toBe(201);
+    const { id } = (await created.json()) as { id: string };
+
     for (let i = 1; i <= 5; i++) {
       const res = await app.request(
-        "/api/questions",
+        `/api/rooms/${id}/questions`,
         { method: "POST", headers, body: JSON.stringify({ body: `q${i}` }) },
         { DB: db },
       );
@@ -39,7 +47,7 @@ describe("POST /api/questions のレート制限", () => {
     }
 
     const sixth = await app.request(
-      "/api/questions",
+      `/api/rooms/${id}/questions`,
       { method: "POST", headers, body: JSON.stringify({ body: "q6" }) },
       { DB: db },
     );

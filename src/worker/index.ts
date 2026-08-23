@@ -25,11 +25,15 @@ type JsonErr = { ok: false; status: 400 | 413; error: string };
 
 type QuestionRow = { id: number; body: string; created_at: number };
 type AnswerRow = { id: number; question_id: number; body: string; created_at: number };
+type RoomRow = { id: string; name: string };
 
 const RATE_LIMIT = { windowMs: 10_000, max: 5 };
 const MAX_BYTES = 8192;
 const MAX_CHARS = 400;
+const MAX_ROOM_NAME = 40;
 const LIST_LIMIT = 200;
+const ROOM_ID_RE = /^[0-9a-f]{8}$/;
+const ID_TRIES = 4;
 
 const MSG = {
   tooLarge: "リクエストが大きすぎます",
@@ -39,6 +43,11 @@ const MSG = {
   tooLong: "400文字以内で入力してください",
   rate: "投稿が集中しています。10秒ほど待ってから送信してください",
   notFound: "質問が見つかりません",
+  roomNameEmpty: "ボード名を入力してください",
+  roomNameTooLong: "ボード名は40文字以内で入力してください",
+  roomRate: "作成が集中しています。10秒ほど待ってから作成してください",
+  roomNotFound: "このボードは見つかりませんでした",
+  roomCreateFailed: "ボードを作成できませんでした。もう一度お試しください",
 } as const;
 
 const app = new Hono<AppEnv>();
@@ -53,6 +62,14 @@ function validateBody(raw: unknown, kind: Kind, max = MAX_CHARS): ValidateOk | V
   const value = raw.trim();
   if (value.length === 0) return { ok: false, message: empty };
   if (Array.from(value).length > max) return { ok: false, message: MSG.tooLong };
+  return { ok: true, value };
+}
+
+function validateName(raw: unknown): ValidateOk | ValidateErr {
+  if (typeof raw !== "string") return { ok: false, message: MSG.roomNameEmpty };
+  const value = raw.trim();
+  if (value.length === 0) return { ok: false, message: MSG.roomNameEmpty };
+  if (Array.from(value).length > MAX_ROOM_NAME) return { ok: false, message: MSG.roomNameTooLong };
   return { ok: true, value };
 }
 
@@ -73,6 +90,11 @@ function bodyField(value: unknown): unknown {
   return (value as { body: unknown }).body;
 }
 
+function nameField(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || !("name" in value)) return undefined;
+  return (value as { name: unknown }).name;
+}
+
 function clientKey(c: Context<AppEnv>): string {
   return c.req.header("CF-Connecting-IP") ?? "unknown";
 }
@@ -80,6 +102,10 @@ function clientKey(c: Context<AppEnv>): string {
 function parseId(raw: string): number | null {
   if (!/^\d+$/.test(raw)) return null;
   return Number(raw);
+}
+
+function parseRoomId(raw: string): string | null {
+  return ROOM_ID_RE.test(raw) ? raw : null;
 }
 
 async function checkAndRecordWrite(db: D1Like, client: string, now: number): Promise<boolean> {
@@ -96,11 +122,15 @@ async function checkAndRecordWrite(db: D1Like, client: string, now: number): Pro
   return false;
 }
 
-async function listQuestions(db: D1Like, unansweredOnly: boolean) {
+async function findRoom(db: D1Like, id: string): Promise<RoomRow | null> {
+  return db.prepare("SELECT id, name FROM rooms WHERE id = ?").bind(id).first<RoomRow>();
+}
+
+async function listQuestions(db: D1Like, roomId: string, unansweredOnly: boolean) {
   const sql = unansweredOnly
-    ? `SELECT id, body, created_at FROM questions WHERE NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id = questions.id) ORDER BY id DESC LIMIT ${LIST_LIMIT}`
-    : `SELECT id, body, created_at FROM questions ORDER BY id DESC LIMIT ${LIST_LIMIT}`;
-  const { results: questions } = await db.prepare(sql).all<QuestionRow>();
+    ? `SELECT id, body, created_at FROM questions WHERE room_id = ? AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id = questions.id) ORDER BY id DESC LIMIT ${LIST_LIMIT}`
+    : `SELECT id, body, created_at FROM questions WHERE room_id = ? ORDER BY id DESC LIMIT ${LIST_LIMIT}`;
+  const { results: questions } = await db.prepare(sql).bind(roomId).all<QuestionRow>();
   if (questions.length === 0) return [];
 
   const placeholders = questions.map(() => "?").join(",");
@@ -138,34 +168,94 @@ function rejectWrite(body: JsonErr | ValidateErr) {
   return { error, status };
 }
 
+function roomNotFound(c: Context<AppEnv>) {
+  return c.json({ error: MSG.roomNotFound }, 404);
+}
+
 // 機械検証と監視が依存する。migrations 適用済みスキーマへ実 SELECT して 200 を返す。壊さないこと
 app.get("/api/health", async (c) => {
   const row = await c.env.DB.prepare("SELECT count(*) AS n FROM app_meta").first<{ n: number }>();
   return row != null ? c.json({ ok: true }) : c.json({ ok: false }, 500);
 });
 
-app.get("/api/questions", async (c) => {
-  const questions = await listQuestions(c.env.DB, c.req.query("unanswered") === "1");
+app.post("/api/rooms", async (c) => {
+  const parsed = await readJsonBody(c);
+  if (!parsed.ok) {
+    const failed = rejectWrite(parsed);
+    return c.json({ error: failed.error }, failed.status);
+  }
+  const name = validateName(nameField(parsed.value));
+  if (!name.ok) return c.json({ error: name.message }, 400);
+
+  const now = Date.now();
+  if (await checkAndRecordWrite(c.env.DB, `room:${clientKey(c)}`, now)) {
+    return c.json({ error: MSG.roomRate }, 429);
+  }
+
+  let id: string | null = null;
+  for (let i = 0; i < ID_TRIES; i++) {
+    const candidate = crypto.randomUUID().slice(0, 8);
+    const hit = await c.env.DB.prepare("SELECT id FROM rooms WHERE id = ?").bind(candidate).first<{ id: string }>();
+    if (hit == null) {
+      id = candidate;
+      break;
+    }
+  }
+  if (id === null) return c.json({ error: MSG.roomCreateFailed }, 500);
+
+  await c.env.DB
+    .prepare("INSERT INTO rooms (id, name, created_at) VALUES (?, ?, ?)")
+    .bind(id, name.value, now)
+    .run();
+  return c.json({ id, name: name.value }, 201);
+});
+
+app.get("/api/rooms/:id", async (c) => {
+  const id = parseRoomId(c.req.param("id"));
+  if (id === null) return roomNotFound(c);
+  const room = await findRoom(c.env.DB, id);
+  if (room == null) return roomNotFound(c);
+  return c.json({ id: room.id, name: room.name }, 200, { "Cache-Control": "no-store" });
+});
+
+app.get("/api/rooms/:id/questions", async (c) => {
+  const id = parseRoomId(c.req.param("id"));
+  if (id === null) return roomNotFound(c);
+  const room = await findRoom(c.env.DB, id);
+  if (room == null) return roomNotFound(c);
+  const questions = await listQuestions(c.env.DB, id, c.req.query("unanswered") === "1");
   return c.json({ questions }, 200, { "Cache-Control": "no-store" });
 });
 
-app.post("/api/questions", async (c) => {
+app.post("/api/rooms/:id/questions", async (c) => {
+  const id = parseRoomId(c.req.param("id"));
+  if (id === null) return roomNotFound(c);
+
   const body = await parseWriteBody(c, "question");
   if (!body.ok) {
     const failed = rejectWrite(body);
     return c.json({ error: failed.error }, failed.status);
   }
+
+  const room = await findRoom(c.env.DB, id);
+  if (room == null) return roomNotFound(c);
+
   const now = Date.now();
   if (await checkAndRecordWrite(c.env.DB, clientKey(c), now)) {
     return c.json({ error: MSG.rate }, 429);
   }
-  await c.env.DB.prepare("INSERT INTO questions (body, created_at) VALUES (?, ?)").bind(body.value, now).run();
+  await c.env.DB
+    .prepare("INSERT INTO questions (room_id, body, created_at) VALUES (?, ?, ?)")
+    .bind(id, body.value, now)
+    .run();
   return c.json({ ok: true }, 201);
 });
 
-app.post("/api/questions/:id/answers", async (c) => {
-  const id = parseId(c.req.param("id"));
-  if (id === null) return c.json({ error: MSG.notFound }, 404);
+app.post("/api/rooms/:id/questions/:qid/answers", async (c) => {
+  const roomId = parseRoomId(c.req.param("id"));
+  if (roomId === null) return roomNotFound(c);
+  const qid = parseId(c.req.param("qid"));
+  if (qid === null) return c.json({ error: MSG.notFound }, 404);
 
   const body = await parseWriteBody(c, "answer");
   if (!body.ok) {
@@ -173,7 +263,10 @@ app.post("/api/questions/:id/answers", async (c) => {
     return c.json({ error: failed.error }, failed.status);
   }
 
-  const found = await c.env.DB.prepare("SELECT id FROM questions WHERE id = ?").bind(id).first<{ id: number }>();
+  const found = await c.env.DB
+    .prepare("SELECT id FROM questions WHERE id = ? AND room_id = ?")
+    .bind(qid, roomId)
+    .first<{ id: number }>();
   if (found == null) return c.json({ error: MSG.notFound }, 404);
 
   const now = Date.now();
@@ -182,7 +275,7 @@ app.post("/api/questions/:id/answers", async (c) => {
   }
   await c.env.DB
     .prepare("INSERT INTO answers (question_id, body, created_at) VALUES (?, ?, ?)")
-    .bind(id, body.value, now)
+    .bind(qid, body.value, now)
     .run();
   return c.json({ ok: true }, 201);
 });

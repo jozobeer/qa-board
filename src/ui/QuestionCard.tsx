@@ -6,9 +6,11 @@ function formatTime(ms: number): string {
 }
 
 export function QuestionCard({
+  roomId,
   question,
   onSubmitted,
 }: {
+  roomId: string;
   question: Question;
   onSubmitted: () => Promise<void>;
 }) {
@@ -63,7 +65,7 @@ export function QuestionCard({
           ))}
         </ul>
       ) : null}
-      <AnswerForm questionId={question.id} onSubmitted={onSubmitted} />
+      <AnswerForm roomId={roomId} questionId={question.id} onSubmitted={onSubmitted} />
     </article>
   );
 }

@@ -1,3 +1,5 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
 // 雛形スモーク。builder は受け入れ条件ごとの機能テストをこのファイルに追記する（雛形は削除しない）
@@ -24,7 +26,24 @@ async function openBoard(browser: Browser, ip: string) {
   const page = await context.newPage();
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "匿名Q&Aボード" })).toBeVisible();
+  const name = `ボード ${uniqueToken()}`;
+  await page.getByTestId("room-name-input").fill(name);
+  await page.getByTestId("create").click();
+  await expect(page).toHaveURL(/#\/r\/[0-9a-f]{8}$/);
+  return { context, page, name };
+}
+
+async function openShareUrl(browser: Browser, ip: string, url: string) {
+  const context = await browser.newContext({ extraHTTPHeaders: { "CF-Connecting-IP": ip } });
+  const page = await context.newPage();
+  await page.goto(url);
   return { context, page };
+}
+
+function roomIdFrom(page: Page): string {
+  const m = page.url().match(/#\/r\/([0-9a-f]{8})$/);
+  if (!m) throw new Error(`共有URLではありません: ${page.url()}`);
+  return m[1];
 }
 
 function bodiesWith(page: Page, text: string) {
@@ -44,6 +63,135 @@ async function submitQuestion(page: Page, body: string) {
   await expect(page.getByTestId("question-submit")).toBeEnabled();
 }
 
+test("AC1: ルートはボード名フォームと使い方だけで余分な要素が無い", async ({ page }) => {
+  await page.goto("/");
+  const ids = await page.locator("#root [data-testid]").evaluateAll((els) =>
+    els.map((el) => el.getAttribute("data-testid")).sort(),
+  );
+  expect(ids).toEqual(["create", "room-name-input"]);
+  await expect(page.getByRole("heading", { name: "匿名Q&Aボード" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "使い方" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /よくある質問|FAQ/ })).toBeVisible();
+});
+
+test("AC2: ボードを作ると共有URLに遷移しコピーで共有URLがクリップボードに入る", async ({ browser }) => {
+  const context = await browser.newContext({
+    permissions: ["clipboard-read", "clipboard-write"],
+    extraHTTPHeaders: { "CF-Connecting-IP": "198.51.100.201" },
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto("/");
+    const name = `春の会 ${uniqueToken()}`;
+    await page.getByTestId("room-name-input").fill(name);
+    await page.getByTestId("create").click();
+    await expect(page).toHaveURL(/#\/r\/[0-9a-f]{8}$/);
+    await expect(page.getByTestId("room-name")).toHaveText(name);
+    const id = roomIdFrom(page);
+    const expected = `${new URL(page.url()).origin}/#/r/${id}`;
+    await expect(page.getByTestId("share-url")).toHaveText(expected);
+    await page.getByTestId("copy").click();
+    await expect(page.getByTestId("copied")).toHaveText("コピーしました");
+    await page.bringToFront();
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe(await page.getByTestId("share-url").innerText());
+  } finally {
+    await context.close();
+  }
+});
+
+test("AC3: 共有URLを別セッションで開くと同じボード名と同じ質問一覧が見える", async ({ browser }) => {
+  const token = uniqueToken();
+  const qBody = `共有質問 ${token}`;
+  const aBody = `共有回答 ${token}`;
+  const { context, page, name } = await openBoard(browser, "198.51.100.202");
+  try {
+    await submitQuestion(page, qBody);
+    const card = cardFor(page, qBody);
+    await card.getByTestId("answer-input").fill(aBody);
+    await card.getByTestId("answer-submit").click();
+    await expect(card.getByTestId("answer-item")).toHaveText(aBody);
+    const url = page.url();
+
+    const second = await openShareUrl(browser, "198.51.100.203", url);
+    try {
+      await expect(second.page.getByTestId("room-name")).toHaveText(name);
+      await expect(bodiesWith(second.page, qBody)).toHaveCount(1);
+      await expect(second.page.getByTestId("answer-item")).toHaveText(aBody);
+      await expect(second.page.getByTestId("answer-badge")).toHaveText("回答 1件");
+    } finally {
+      await second.context.close();
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+test("AC4: 別々に作った2つのボードは互いに影響しない", async ({ browser }) => {
+  const tokenA = uniqueToken();
+  const tokenB = uniqueToken();
+  const a = await openBoard(browser, "198.51.100.204");
+  const b = await openBoard(browser, "198.51.100.205");
+  try {
+    await submitQuestion(a.page, `A質問 ${tokenA}`);
+    const cardA = cardFor(a.page, `A質問 ${tokenA}`);
+    await cardA.getByTestId("answer-input").fill(`A回答 ${tokenA}`);
+    await cardA.getByTestId("answer-submit").click();
+    await expect(cardA.getByTestId("answer-item")).toHaveCount(1);
+
+    await submitQuestion(b.page, `B質問 ${tokenB}`);
+
+    await expect(bodiesWith(a.page, tokenB)).toHaveCount(0);
+    await expect(bodiesWith(b.page, tokenA)).toHaveCount(0);
+    await expect(b.page.getByTestId("answer-item")).toHaveCount(0);
+
+    await a.page.reload();
+    await b.page.reload();
+    await expect(bodiesWith(a.page, tokenB)).toHaveCount(0);
+    await expect(bodiesWith(b.page, tokenA)).toHaveCount(0);
+    await expect(b.page.getByTestId("answer-item")).toHaveCount(0);
+  } finally {
+    await a.context.close();
+    await b.context.close();
+  }
+});
+
+test("AC5: 存在しないIDの共有URLは見つからない旨を表示し投稿欄を出さない", async ({ page }) => {
+  await page.goto("/#/r/00000000");
+  await expect(page.getByTestId("notfound")).toHaveText("このボードは見つかりませんでした");
+  await expect(page.getByTestId("question-input")).toHaveCount(0);
+  await expect(page.getByTestId("question-card")).toHaveCount(0);
+});
+
+test("AC6: 別ボードのURLから他ボードの質問には回答できない", async ({ browser, request }) => {
+  const token = uniqueToken();
+  const a = await openBoard(browser, "198.51.100.206");
+  const b = await openBoard(browser, "198.51.100.207");
+  try {
+    await submitQuestion(a.page, `越境元 ${token}`);
+    const idA = roomIdFrom(a.page);
+    const idB = roomIdFrom(b.page);
+    const listed = await request.get(`/api/rooms/${idA}/questions`);
+    expect(listed.status()).toBe(200);
+    const json = (await listed.json()) as { questions: { id: number; body: string }[] };
+    const q = json.questions.find((item) => item.body.includes(token));
+    expect(q).toBeDefined();
+
+    const posted = await request.post(`/api/rooms/${idB}/questions/${q!.id}/answers`, {
+      headers: { "CF-Connecting-IP": "198.51.100.208", "Content-Type": "application/json" },
+      data: { body: `越境回答 ${token}` },
+    });
+    expect(posted.status()).toBe(404);
+
+    await a.page.reload();
+    await expect(cardFor(a.page, `越境元 ${token}`).getByTestId("answer-badge")).toHaveText("未回答");
+    await expect(b.page.getByTestId("answer-item")).toHaveCount(0);
+  } finally {
+    await a.context.close();
+    await b.context.close();
+  }
+});
+
 test("質問を投稿すると一覧の先頭に出て、別セッションでも見える", async ({ browser }) => {
   const token = uniqueToken();
   const body = `AC1 本文 ${token}`;
@@ -52,15 +200,16 @@ test("質問を投稿すると一覧の先頭に出て、別セッションで�
     await submitQuestion(page, body);
     await expect(page.getByTestId("question-body").first()).toHaveText(body);
     await expect(page.getByTestId("answer-badge").first()).toHaveText("未回答");
+    const url = page.url();
+
+    const second = await openShareUrl(browser, "198.51.100.12", url);
+    try {
+      await expect(bodiesWith(second.page, body)).toHaveCount(1);
+    } finally {
+      await second.context.close();
+    }
   } finally {
     await context.close();
-  }
-
-  const second = await openBoard(browser, "198.51.100.12");
-  try {
-    await expect(bodiesWith(second.page, body)).toHaveCount(1);
-  } finally {
-    await second.context.close();
   }
 });
 
@@ -81,21 +230,22 @@ test("回答は投稿先の質問にだけ紐づく", async ({ browser }) => {
     await expect(qa.getByTestId("answer-badge")).toHaveText("回答 1件");
     await expect(qb.getByTestId("answer-item")).toHaveCount(0);
     await expect(qb.getByTestId("answer-badge")).toHaveText("未回答");
+
+    const url = page.url();
+    const second = await openShareUrl(browser, "198.51.100.22", url);
+    try {
+      const qa2 = cardFor(second.page, `QA ${token}`);
+      const qb2 = cardFor(second.page, `QB ${token}`);
+      await expect(qa2.getByTestId("answer-item")).toHaveCount(1);
+      await expect(qa2.getByTestId("answer-item")).toHaveText(`A1 ${token}`);
+      await expect(qa2.getByTestId("answer-badge")).toHaveText("回答 1件");
+      await expect(qb2.getByTestId("answer-item")).toHaveCount(0);
+      await expect(qb2.getByTestId("answer-badge")).toHaveText("未回答");
+    } finally {
+      await second.context.close();
+    }
   } finally {
     await context.close();
-  }
-
-  const second = await openBoard(browser, "198.51.100.22");
-  try {
-    const qa = cardFor(second.page, `QA ${token}`);
-    const qb = cardFor(second.page, `QB ${token}`);
-    await expect(qa.getByTestId("answer-item")).toHaveCount(1);
-    await expect(qa.getByTestId("answer-item")).toHaveText(`A1 ${token}`);
-    await expect(qa.getByTestId("answer-badge")).toHaveText("回答 1件");
-    await expect(qb.getByTestId("answer-item")).toHaveCount(0);
-    await expect(qb.getByTestId("answer-badge")).toHaveText("未回答");
-  } finally {
-    await second.context.close();
   }
 });
 
@@ -185,7 +335,7 @@ test("送信処理中の追加操作では二重投稿されない", async ({ br
   const { context, page } = await openBoard(browser, "198.51.100.61");
   try {
     let postCount = 0;
-    await page.route("**/api/questions", async (route) => {
+    await page.route("**/api/rooms/*/questions", async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
         return;
@@ -204,6 +354,22 @@ test("送信処理中の追加操作では二重投稿されない", async ({ br
 
     await expect(bodiesWith(page, body)).toHaveCount(1);
     expect(postCount).toBe(1);
+  } finally {
+    await context.close();
+  }
+});
+
+test("file:// でもタイトルとフッターが表示され pageerror がない", async ({ browser }) => {
+  const fileUrl = pathToFileURL(path.resolve("public/index.html")).href;
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto(fileUrl);
+    await expect(page.getByRole("heading", { name: "匿名Q&Aボード" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "apps.jozo.beer" })).toBeVisible();
+    expect(errors).toEqual([]);
   } finally {
     await context.close();
   }

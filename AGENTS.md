@@ -4,14 +4,14 @@
 
 ## アプリ概要と構成
 
-勉強会・イベント参加者が名前を残さずに質問を投稿し、誰でもその質問に回答をぶら下げられる公開ボード。1 画面構成で、上部に質問フォーム、その下に新しい順の質問カード、各カードに紐づく回答と「未回答 / 回答 N件」バッジ、「未回答のみ」トグル。投稿はすべて D1 に永続化し、別セッションからも同じ一覧が見える。
+勉強会・イベントごとにボードを作り、共有URL（`#/r/<8桁hex>`）を知っている人だけが同じ質問一覧を読み書きできる匿名Q&A。ルートはボード作成、ボード画面に質問フォームと新しい順のカード、「未回答 / 回答 N件」バッジ、「未回答のみ」トグル。投稿はすべて D1 に永続化する。
 
 | 領域 | 実装 |
 |------|------|
-| UI | `index.html` + `src/ui/`。状態は `App.tsx` に集約（`questions` / `unansweredOnly` / `loadError`）し props で配る。各フォームは入力・エラー・`submitting` のみローカルに持つ。投稿成功後は `reload()` で `GET /api/questions` を取り直す。textarea に `maxLength` を付けない（401 文字の拒否経路を踏むため）。文字数は `Array.from(value).length`。`file://` でも骨格（h1・フォーム・ツールバー・フッター）は描画し、失敗時は「サーバに接続できませんでした」 |
-| API | `src/worker/index.ts`。すべて JSON（HTML は返さない）。`GET /api/health`（`app_meta` への実 SELECT、200 `{"ok":true}`。契約を壊さない）、`GET /api/questions?unanswered=1`（200 `{ questions }`、`Cache-Control: no-store`、新しい順・最大 200 件）、`POST /api/questions`（201 `{ ok: true }` / 400 / 413 / 429）、`POST /api/questions/:id/answers`（201 / 400 / 404 / 413 / 429）。POST は作成物を返さず、UI は成功後に GET する |
-| 永続化 | D1 のみ（`c.env.DB`）。`questions` / `answers` / `write_log`（`migrations/0002_qa.sql`）。id は `INTEGER PRIMARY KEY AUTOINCREMENT`。質問は `ORDER BY id DESC`、回答は `ORDER BY id ASC` |
-| 書込制限 | 本文は trim 後 1〜400 コードポイント。受信ボディ 8,192 バイト超は 413。同一 IP（`CF-Connecting-IP`、無ければ `"unknown"`）は 10,000ms 窓で受理 5 件まで、6 件目は 429。判定順はサイズ → バリデーション → レート → INSERT。拒否したリクエストは枠を消費しない |
+| UI | `index.html` + `src/ui/`。ルーティングは `App.tsx`（`location.hash` の `#/r/<id>`）、ボード画面の状態は `Board.tsx` に集約（`room` / `questions` / `unansweredOnly` / `loadError` / `notFound` / `copied`）し props で配る。各フォームは入力・エラー・`submitting` のみローカルに持つ。投稿成功後は `reload()` でルーム配下の GET を取り直す。textarea / ボード名 input に `maxLength` を付けない。文字数は `Array.from(value).length`。`file://` でも骨格（h1・フォーム・フッター）は描画し、失敗時は「サーバに接続できませんでした」 |
+| API | `src/worker/index.ts`。すべて JSON（HTML は返さない）。`GET /api/health`（`app_meta` への実 SELECT、200 `{"ok":true}`。契約を壊さない）、`POST /api/rooms`（201 `{ id, name }` / 400 / 413 / 429 / 500）、`GET /api/rooms/:id`（200 `{ id, name }`、`Cache-Control: no-store` / 404）、`GET /api/rooms/:id/questions?unanswered=1`（200 `{ questions }` / 404）、`POST /api/rooms/:id/questions`（201 `{ ok: true }` / 400 / 404 / 413 / 429）、`POST /api/rooms/:id/questions/:qid/answers`（201 / 400 / 404 / 413 / 429）。部屋作成以外の POST は作成物を返さず、UI は成功後に GET する |
+| 永続化 | D1 のみ（`c.env.DB`）。`rooms` / `questions`（`room_id`） / `answers` / `write_log`（`migrations/0002_qa.sql` と `migrations/0003_rooms.sql`）。質問 id は `INTEGER PRIMARY KEY AUTOINCREMENT`。質問は `ORDER BY id DESC`、回答は `ORDER BY id ASC` |
+| 書込制限 | ボード名は trim 後 1〜40 コードポイント、本文は 1〜400。受信ボディ 8,192 バイト超は 413。質問・回答は同一 IP（`CF-Connecting-IP`、無ければ `"unknown"`）で 10,000ms 窓 5 件、ボード作成は `room:<ip>` の別枠。6 件目は 429。書込系の判定順は ID 形式 → サイズ → バリデーション → 存在・所属確認 → レート → INSERT。拒否したリクエストは枠を消費しない |
 | テスト | API/ロジックは `tests/unit/*.test.ts`（D1 はフェイクを `app.request` の第 3 引数で注入）。ブラウザ挙動は `tests/app.spec.ts`。ローカル D1 は `.wrangler/` に残るため絶対件数で assert しない。各テストは一意トークンで本文をスコープし、`CF-Connecting-IP` でレート枠を分離する。雛形のスモークと health テストは削除しない |
 
 空状態: 質問 0 件なら「まだ質問はありません。最初の質問を投稿してみましょう。」、未回答フィルタ ON で 0 件なら「未回答の質問はありません。」

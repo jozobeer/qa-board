@@ -11,4 +11,13 @@ export type Question = {
   answers: Answer[];
 };
 
+export type Room = {
+  id: string;
+  name: string;
+};
+
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; message: string };
+
+export type LoadResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; notFound: boolean; message: string };

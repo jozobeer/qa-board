@@ -2,9 +2,11 @@ import { useState } from "react";
 import { postAnswer } from "./api";
 
 export function AnswerForm({
+  roomId,
   questionId,
   onSubmitted,
 }: {
+  roomId: string;
   questionId: number;
   onSubmitted: () => Promise<void>;
 }) {
@@ -16,7 +18,7 @@ export function AnswerForm({
     if (submitting) return;
     setSubmitting(true);
     setError(null);
-    const result = await postAnswer(questionId, value);
+    const result = await postAnswer(roomId, questionId, value);
     if (!result.ok) {
       setError(result.message);
       setSubmitting(false);

@@ -1,31 +1,22 @@
 import { useState } from "react";
-import { postQuestion } from "./api";
+import { createRoom } from "./api";
 
-export function QuestionForm({
-  roomId,
-  onSubmitted,
-}: {
-  roomId: string;
-  onSubmitted: () => Promise<void>;
-}) {
-  const [value, setValue] = useState("");
+export function RoomForm() {
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const count = Array.from(value).length;
 
   async function submit() {
     if (submitting) return;
     setSubmitting(true);
     setError(null);
-    const result = await postQuestion(roomId, value);
+    const result = await createRoom(name);
     if (!result.ok) {
       setError(result.message);
       setSubmitting(false);
       return;
     }
-    setValue("");
-    setSubmitting(false);
-    await onSubmitted();
+    location.hash = "#/r/" + result.value.id;
   }
 
   return (
@@ -41,36 +32,27 @@ export function QuestionForm({
         boxShadow: "0 1px 2px rgba(0,0,0,.06)",
       }}
     >
-      <textarea
-        data-testid="question-input"
-        rows={3}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="質問を入力"
-        aria-label="質問本文"
+      <input
+        data-testid="room-name-input"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="ボード名を入力"
+        aria-label="ボード名"
         style={{
           width: "100%",
           boxSizing: "border-box",
-          resize: "vertical",
           border: "1px solid #d5dbe3",
           borderRadius: 8,
           padding: "0.6rem 0.7rem",
           font: "inherit",
         }}
       />
-      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginTop: "0.6rem" }}>
-        <span
-          data-testid="question-counter"
-          style={{ fontSize: "0.85rem", color: count > 400 ? "#b42318" : "#667085" }}
-        >
-          {count} / 400
-        </span>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.6rem" }}>
         <button
           type="submit"
-          data-testid="question-submit"
+          data-testid="create"
           disabled={submitting}
           style={{
-            marginLeft: "auto",
             background: "#324a5e",
             color: "#fff",
             border: 0,
@@ -81,11 +63,11 @@ export function QuestionForm({
             opacity: submitting ? 0.7 : 1,
           }}
         >
-          {submitting ? "送信中…" : "質問する"}
+          {submitting ? "作成中…" : "ボードを作る"}
         </button>
       </div>
       {error ? (
-        <p data-testid="question-error" style={{ color: "#b42318", margin: "0.6rem 0 0", fontSize: "0.9rem" }}>
+        <p data-testid="create-error" style={{ color: "#b42318", margin: "0.6rem 0 0", fontSize: "0.9rem" }}>
           {error}
         </p>
       ) : null}
